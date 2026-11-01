@@ -822,7 +822,19 @@ function viewAccounts(params) {
   const editId = params.edit;
   const ps = visibleProfiles().sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '', 'fr'));
   const linked = new Set(S.profiles.map((p) => p.youth_id).filter(Boolean));
-  const youthOpts = (cur) => `<option value="">— Aucune fiche —</option>` + S.youth.filter((y) => !linked.has(y.id) || y.id === cur).map((y) => `<option value="${y.id}" ${y.id === cur ? 'selected' : ''}>${esc(fullName(y))}${y.is_core_team ? ' (Core)' : ''}</option>`).join('');
+  const youthOpts = (cur) => {
+    const free = S.youth.filter((y) => !linked.has(y.id) || y.id === cur);
+    const o = (y) => `<option value="${y.id}" ${y.id === cur ? 'selected' : ''}>${esc(fullName(y))}</option>`;
+    return `<option value="">— Aucune fiche —</option><optgroup label="Membres Core Team">${free.filter((y) => y.is_core_team).map(o).join('')}</optgroup><optgroup label="Autres jeunes">${free.filter((y) => !y.is_core_team).map(o).join('')}</optgroup>`;
+  };
+  const linkWarn = (p) => {
+    const y = youthById(p.youth_id);
+    if (p.role === 'inactif' || p.role === 'pasteur') return '';
+    if (!y) return p.role === 'coreteam' ? '<span class="b warn">sans fiche</span>' : '';
+    if (!y.is_core_team) return '<span class="b bad">fiche à vérifier</span>';
+    if (norm(p.full_name) && norm(y.first_name) && !norm(p.full_name).includes(norm(y.first_name).slice(0, 4))) return '<span class="b bad">fiche à vérifier</span>';
+    return '';
+  };
   const roleOpts = (cur) => Object.entries(ROLES).filter(([k]) => k !== 'superadmin' || isSuper()).map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${l}</option>`).join('');
   const ed = editId && profileById(editId);
   const html = `
@@ -832,11 +844,11 @@ function viewAccounts(params) {
   ${ed ? `<form class="card" id="ef"><h2>Modifier : ${esc(ed.full_name || ed.email)}</h2><div class="small muted" style="margin-bottom:10px">${esc(ed.email)}</div>
     <label class="f"><span>Nom affiché</span><input type="text" name="full_name" value="${esc(ed.full_name)}"></label>
     <label class="f"><span>Rôle</span><select name="role">${ed.role === 'superadmin' && !isSuper() ? '<option>Super Admin</option>' : roleOpts(ed.role)}</select></label>
-    <label class="f"><span>Fiche jeune liée (pour voir son équipe)</span><select name="youth_id">${youthOpts(ed.youth_id)}</select></label>
+    <label class="f"><span>Sa propre fiche jeune (pour voir son équipe)</span><select name="youth_id">${youthOpts(ed.youth_id)}</select><span class="tiny muted" style="display:block;margin-top:4px">La fiche de la personne elle-même, pas celle d'un jeune de son équipe.</span></label>
     <div class="btns"><button class="btn" type="submit">Enregistrer</button><a class="btn light" href="#/comptes">Annuler</a></div>
     <hr><button type="button" class="btn ghost sm" id="rp">Réinitialiser le mot de passe</button></form>` : `
   <form class="card" id="cf"><h2>Créer un compte</h2>
-    <label class="f"><span>Fiche jeune liée (facultatif)</span><select name="youth_id" id="cyid">${youthOpts(null)}</select></label>
+    <label class="f"><span>Sa propre fiche jeune (obligatoire pour un leader)</span><select name="youth_id" id="cyid">${youthOpts(null)}</select><span class="tiny muted" style="display:block;margin-top:4px">Choisis la fiche de la personne elle-même, pas celle d'un jeune de son équipe.</span></label>
     <label class="f"><span>Nom affiché *</span><input type="text" name="full_name" required></label>
     <label class="f"><span>Email *</span><input type="email" name="email" required autocomplete="off"></label>
     <label class="f"><span>Rôle *</span><select name="role">${roleOpts('coreteam')}</select></label>
@@ -844,7 +856,7 @@ function viewAccounts(params) {
     <button class="btn full" type="submit">Créer le compte</button>
     <div class="tiny muted" style="margin-top:8px">La personne choisira son propre mot de passe à la première connexion.</div></form>`}
   <div class="sec">Comptes (${ps.length})</div>
-  <div class="list">${ps.map((p) => { const y = youthById(p.youth_id); return `<a class="li" href="#/comptes?edit=${p.id}"><span class="grow"><div class="nm">${esc(p.full_name || p.email)}</div><div class="sub">${esc(p.email)}${y ? ' · fiche ' + esc(fullName(y)) : ''}</div></span><span class="b ${p.role === 'inactif' ? 'bad' : p.role === 'superadmin' ? 'acc' : 'pri'}">${esc(ROLES[p.role].split(' (')[0])}</span></a>`; }).join('')}</div>
+  <div class="list">${ps.map((p) => { const y = youthById(p.youth_id); return `<a class="li" href="#/comptes?edit=${p.id}"><span class="grow"><div class="nm">${esc(p.full_name || p.email)}</div><div class="sub">${esc(p.email)}${y ? ' · fiche ' + esc(fullName(y)) : ''}</div></span><span style="text-align:right;flex:none">${linkWarn(p)}${linkWarn(p) ? '<br>' : ''}<span class="b ${p.role === 'inactif' ? 'bad' : p.role === 'superadmin' ? 'acc' : 'pri'}">${esc(ROLES[p.role].split(' (')[0])}</span></span></a>`; }).join('')}</div>
   <div class="card small muted"><b>Rôles</b><br>• <b>Super Admin</b> : tout voir, tout modifier, gérer les comptes.<br>• <b>Assistant</b> : comme Care + créer des comptes et répartir les jeunes.<br>• <b>Volunteer Care</b> : ajouter/modifier tous les jeunes, présences de tous.<br>• <b>Pasteur</b> : tout voir, sans rien modifier.<br>• <b>Core Team</b> : seulement son équipe (lier sa fiche jeune).<br>• <b>Inactif</b> : aucun accès.</div>`;
   return {
     title: 'Comptes et rôles', back: true, html,
