@@ -8,8 +8,8 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 const sb = window.__MOCK_SB__ || window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
 
 /* ---------- constantes ---------- */
-const KINDS = { culte: 'Culte du dimanche', youth_service: 'Youth Service', youth_meeting: 'Youth Meeting' };
-const KIND_SHORT = { culte: 'Culte', youth_service: 'Y. Service', youth_meeting: 'Y. Meeting' };
+const KINDS = { culte: 'Culte du dimanche', youth_service: 'Youth Service', youth_meeting: 'Youth Meeting', coreteam: 'Rencontre Core Team', ministere: 'Rencontre de ministère (TG)' };
+const KIND_SHORT = { culte: 'Culte', youth_service: 'Y. Service', youth_meeting: 'Y. Meeting', coreteam: 'Core Team', ministere: 'Ministère' };
 const ROLES = { superadmin: 'Super Admin', pasteur: 'Pasteur', assistant: 'Assistant', care: 'Volunteer Care', coreteam: 'Core Team', inactif: 'Inactif (aucun accès)' };
 const STATUS = { actif: 'Actif', nouveau: 'Nouveau', inactif: 'Inactif' };
 
@@ -72,6 +72,9 @@ const teamOf = (leaderYid) => S.youth.filter((y) => y.leader_youth_id === leader
 const accountOfYouth = (yid) => S.profiles.find((p) => p.youth_id === yid && p.role !== 'inactif');
 const visibleProfiles = () => S.profiles.filter((p) => !/@example\.test$/i.test(p.email || ''));
 const activeYouth = () => S.youth.filter((y) => y.status !== 'inactif');
+const canEditInfo = (y) => !readOnly() && (canEditAll() || y.leader_youth_id === myYouthId() || y.id === myYouthId());
+const canSeeCore = () => canReadAll() || myTeam().some((y) => y.is_core_team);
+const birthdayScope = () => (canReadAll() ? activeYouth() : myTeam().filter((y) => y.status !== 'inactif'));
 
 /* ---------- chargement ---------- */
 async function fetchAll(table, order) {
@@ -99,7 +102,15 @@ async function loadAll() {
 /* ---------- calculs ---------- */
 const attOf = (sid, yid) => S.attendance.find((a) => a.session_id === sid && a.youth_id === yid);
 const sessionsSorted = () => [...S.sessions].sort((a, b) => (a.date === b.date ? a.kind.localeCompare(b.kind) : b.date.localeCompare(a.date)));
-function eligibleSessions(y) { const c = (y.created_at || '').slice(0, 10); return sessionsSorted().filter((s) => !c || s.date >= c || attOf(s.id, y.id)); }
+function eligibleSessions(y) {
+  const c = (y.created_at || '').slice(0, 10);
+  return sessionsSorted().filter((s) => {
+    const a = attOf(s.id, y.id);
+    if (s.kind === 'coreteam' && !y.is_core_team && !a) return false;
+    if (s.kind === 'ministere' && !a) return false;
+    return !c || s.date >= c || a;
+  });
+}
 function presenceStats(y) {
   const ss = eligibleSessions(y); let p = 0, n = 0;
   ss.forEach((s) => { const a = attOf(s.id, y.id); if (a) { n++; if (a.present) p++; } });
@@ -199,7 +210,8 @@ function menuHtml() {
   return `<div class="menu" data-close-menu><div class="sheet" onclick="event.stopPropagation()">
     <div class="who"><b>${esc(S.me.full_name || S.me.email)}</b><div class="small muted">${esc(ROLES[role()])}${y ? ' · fiche : ' + esc(fullName(y)) : ''}</div></div>
     <a href="#/compte">Mon compte</a>
-    ${canEditAll() || isAdmin() ? '<a href="#/equipes">Équipes Core Team</a>' : ''}
+    ${canSeeCore() ? '<a href="#/coreteam">Membres Core Team</a>' : ''}
+    ${canEditAll() || isAdmin() ? '<a href="#/equipes">Répartition des équipes</a>' : ''}
     ${isAdmin() ? '<a href="#/comptes">Comptes et rôles</a>' : ''}
     ${canReadAll() ? '<a href="#/export">Exporter (CSV)</a>' : ''}
     <a href="#/aide">Aide</a>
@@ -228,7 +240,8 @@ async function render() {
     switch (r.name) {
       case '': case 'accueil': v = viewHome(); break;
       case 'jeunes': v = viewYouthList(r.params); break;
-      case 'jeune': v = p[1] === 'nouveau' ? viewYouthForm(null) : p[2] === 'modifier' ? viewYouthForm(p[1]) : viewYouthDetail(p[1]); break;
+      case 'jeune': v = p[1] === 'nouveau' ? viewYouthForm(null) : p[2] === 'modifier' ? viewYouthForm(p[1]) : p[2] === 'infos' ? viewYouthInfoForm(p[1]) : viewYouthDetail(p[1]); break;
+      case 'coreteam': v = viewCoreTeam(); break;
       case 'presences': v = viewSessions(); break;
       case 'presence': v = viewSession(p[1], r.params); break;
       case 'suivi': v = viewFollow(r.params); break;
@@ -296,6 +309,7 @@ function viewHome() {
   const first = (S.me.full_name || '').split(' ')[0];
   let html = `<div class="row" style="margin:2px 4px 12px"><div class="grow"><h1>Bonjour ${esc(first)} 👋</h1><div class="small muted">${esc(ROLES[role()])} · semaine ${esc(weekLabel(ws))}</div></div></div>`;
 
+  html += homeAlerts();
   if (hasTeam()) html += homeTeamBlock(ws);
   else if (role() === 'coreteam') html += `<div class="alert warn">Ton compte n'est pas encore lié à une équipe. Demande à l'admin de lier ton compte à ta fiche et de t'assigner des jeunes.</div>`;
 
@@ -307,7 +321,6 @@ function homeTeamBlock(ws) {
   const fs = teamFollowStats(team, ws);
   const rep = reportOf(S.me.id, ws);
   const risk = team.filter(atRisk);
-  const bd = upcomingBirthdays(team, 30);
   return `<div class="sec">Mon équipe</div>
   <div class="kpis">
     <div class="kpi"><div class="v">${team.length}</div><div class="l">jeunes dans mon équipe</div></div>
@@ -317,7 +330,7 @@ function homeTeamBlock(ws) {
   </div>
   <div class="btns" style="margin-bottom:12px"><a class="btn" href="#/suivi">Faire le suivi</a>${rep ? '' : '<a class="btn ghost" href="#/rapport/nouveau">Écrire mon rapport</a>'}</div>
   ${risk.length ? `<div class="card"><h2>À relancer <span class="b bad">${risk.length}</span></h2><div class="small muted" style="margin:-4px 0 8px">Absents aux 3 dernières séances</div>${risk.map(yLine).join('')}</div>` : ''}
-  ${bd.length ? `<div class="card"><h2>Anniversaires à venir</h2>${bd.map((x) => `<div class="row small" style="margin:6px 0"><span class="grow">🎂 ${esc(fullName(x.y))}</span><span class="muted">${x.d === 0 ? "aujourd'hui" : fmtD(iso(x.nx), { day: 'numeric', month: 'short' })}</span></div>`).join('')}</div>` : ''}`;
+`;
 }
 const yLine = (y) => `<a class="row small" style="margin:7px 0;color:inherit" href="#/jeune/${y.id}"><span class="av" style="width:30px;height:30px;font-size:.72rem">${esc(initials(y))}</span><span class="grow">${esc(fullName(y))}</span><span class="muted">${esc(fmtPhone(y.phone))}</span></a>`;
 function homeGlobal(ws) {
@@ -366,6 +379,85 @@ function homeGlobal(ws) {
     : `<div class="card small muted">🎂 Aucun anniversaire connu : ${S.youth.filter((y) => !y.birth_date).length} fiches sans date de naissance.</div>`}
   ${dups.length ? `<div class="card"><h2>Doublons possibles <span class="b warn">${dups.length}</span></h2>${dups.map((d) => `<div class="small" style="margin:7px 0"><a href="#/jeune/${d.a.id}">${esc(fullName(d.a))}</a> ↔ <a href="#/jeune/${d.b.id}">${esc(fullName(d.b))}</a> <span class="muted">(${esc(d.why)})</span></div>`).join('')}</div>` : ''}
   ${incomplete ? `<div class="alert info"><a href="#/jeunes?f=incomplet" style="color:inherit"><b>${incomplete} fiches incomplètes</b> (nom, téléphone ou date de naissance manquant) → compléter</a></div>` : ''}`;
+}
+
+/* ---------- ALERTES (anniversaires, fiches) ---------- */
+const bdayMsg = (y) => encodeURIComponent(`Joyeux anniversaire ${y.first_name} ! 🎉🎂 Toute la famille du Youth Madeline te souhaite une belle journée. Que Dieu te bénisse abondamment cette nouvelle année ! 🙏`);
+function homeAlerts() {
+  let out = '';
+  const bd = upcomingBirthdays(birthdayScope(), 7);
+  if (bd.length) {
+    out += `<div class="card" style="border:2px solid var(--acc-soft)"><h2>🎂 Anniversaires ${bd.some((x) => x.d === 0) ? "aujourd'hui et cette semaine" : 'cette semaine'}</h2>
+    ${bd.map((x) => `<div class="row" style="margin:8px 0"><a class="grow" href="#/jeune/${x.y.id}" style="color:inherit;min-width:0"><b>${esc(fullName(x.y))}</b>${x.y.is_core_team ? ' <span class="b acc">Core</span>' : ''}<div class="tiny muted">${x.d === 0 ? "<b style='color:var(--acc)'>AUJOURD'HUI</b>" : x.d === 1 ? 'demain' : 'dans ' + x.d + ' jours'} · ${esc(fmtD(iso(x.nx), { weekday: 'long', day: 'numeric', month: 'long' }))} · ${age(x.y.birth_date) + (x.d === 0 ? 0 : 1)} ans${youthById(x.y.leader_youth_id) ? ' · équipe ' + esc(youthById(x.y.leader_youth_id).first_name) : ''}</div></a>
+    ${digits(x.y.phone) ? `<a class="btn ok sm" href="https://wa.me/${intlPhone(x.y.phone)}?text=${bdayMsg(x.y)}" target="_blank" rel="noopener">${I.wa} Souhaiter</a>` : ''}</div>`).join('')}</div>`;
+  }
+  const mine = youthById(myYouthId());
+  if (mine && missingFields(mine).length) out += `<div class="alert warn"><a href="#/jeune/${mine.id}/infos" style="color:inherit"><b>Complète ta fiche</b> : ${esc(missingFields(mine).join(', '))} manquant(s) → compléter</a></div>`;
+  const noDob = myTeam().filter((y) => y.status !== 'inactif' && !y.birth_date);
+  if (noDob.length && !readOnly()) out += `<div class="alert info"><a href="#/jeunes?f=equipe" style="color:inherit">🎂 <b>${noDob.length} jeune(s) de ton équipe sans date de naissance</b>. Demande-la pendant ton suivi et complète leur fiche.</a></div>`;
+  return out;
+}
+
+/* ---------- JEUNE : compléter les infos (leader, la personne elle-même) ---------- */
+function viewYouthInfoForm(id) {
+  const y = youthById(id);
+  if (!y || !canEditInfo(y)) return { title: 'Compléter', back: true, html: `<div class="alert warn">Tu ne peux pas modifier cette fiche.</div>` };
+  const html = `<form class="card" id="if"><h2>${esc(fullName(y))}</h2>
+    <label class="f"><span>Date de naissance</span><input type="date" name="birth_date" value="${esc(y.birth_date)}"></label>
+    <label class="f"><span>Téléphone (8 chiffres)</span><input type="tel" name="phone" inputmode="numeric" value="${esc(y.phone)}"></label>
+    <label class="f"><span>Email</span><input type="email" name="email" value="${esc(y.email)}"></label>
+    <label class="f"><span>Adresse</span><input type="text" name="address" value="${esc(y.address)}"></label>
+    <label class="f"><span>Ministère(s) à TG</span><input type="text" name="ministry" value="${esc(y.ministry)}" placeholder="ex. Media, Autel"></label>
+    <label class="f"><span>Bethel</span><select name="bethel"><option value="" ${y.bethel == null ? 'selected' : ''}>—</option><option value="true" ${y.bethel === true ? 'selected' : ''}>Oui</option><option value="false" ${y.bethel === false ? 'selected' : ''}>Non</option></select></label>
+    <div class="btns"><button class="btn" type="submit">Enregistrer</button><button type="button" class="btn light" data-back>Annuler</button></div></form>`;
+  return {
+    title: y.id === myYouthId() ? 'Ma fiche' : 'Compléter la fiche', back: true, html,
+    bind(root) {
+      const f = q('#if', root);
+      f.addEventListener('submit', async (e) => {
+        e.preventDefault(); const b = q('button[type=submit]', f); b.disabled = true;
+        const rec = { p_id: y.id, p_phone: f.phone.value, p_email: f.email.value, p_address: f.address.value, p_birth_date: f.birth_date.value || null, p_ministry: f.ministry.value, p_bethel: f.bethel.value === '' ? null : f.bethel.value === 'true' };
+        try {
+          await must(sb.rpc('update_youth_info', rec));
+          Object.assign(y, { phone: digits(rec.p_phone) || null, email: rec.p_email.trim() || null, address: rec.p_address.trim() || null, birth_date: rec.p_birth_date, ministry: rec.p_ministry.trim() || null, bethel: rec.p_bethel });
+          toast('Fiche enregistrée'); go('#/jeune/' + y.id);
+        } catch (err) { toast(errMsg(err), true); b.disabled = false; }
+      });
+    },
+  };
+}
+
+/* ---------- CORE TEAM : vue des membres ---------- */
+function kindStats(y, kind) {
+  let p = 0, n = 0;
+  eligibleSessions(y).filter((s) => s.kind === kind).forEach((s) => { const a = attOf(s.id, y.id); if (a) { n++; if (a.present) p++; } });
+  return { p, n };
+}
+function viewCoreTeam() {
+  if (!canSeeCore()) return { title: 'Core Team', html: '<div class="alert warn">Accès réservé.</div>' };
+  const ws = weekStart();
+  const members = leaders().filter((y) => y.status !== 'inactif');
+  const kinds = ['culte', 'youth_meeting', 'youth_service', 'coreteam', 'ministere'];
+  const last4 = [0, 1, 2, 3].map((i) => addDays(ws, -7 * i));
+  const html = `
+  <div class="small muted" style="margin:0 4px 10px">${members.length} membres · présences par type d'activité, suivi de leur équipe et rapports (4 dernières semaines).</div>
+  ${members.map((y) => {
+    const acc = accountOfYouth(y.id); const team = teamOf(y.id).filter((t) => !t.is_core_team || t.leader_youth_id === y.id);
+    const fs = teamFollowStats(team, ws); const mine = fuOf(y.id, ws);
+    const reps = acc ? last4.filter((w) => reportOf(acc.id, w)).length : 0;
+    const bd = y.birth_date ? upcomingBirthdays([y], 366)[0] : null;
+    return `<div class="card">
+      <div class="row"><span class="av core">${esc(initials(y))}</span><a class="grow" href="#/jeune/${y.id}" style="color:inherit;min-width:0"><b>${esc(fullName(y))}</b><div class="tiny muted">${acc ? esc(ROLES[acc.role]) : '<span style="color:var(--warn)">pas de compte</span>'}${y.ministry ? ' · ' + esc(y.ministry) : ''}</div></a>
+      ${digits(y.phone) ? `<a class="btn ok sm" style="padding:0 10px" href="https://wa.me/${intlPhone(y.phone)}" target="_blank" rel="noopener" aria-label="WhatsApp">${I.wa}</a>` : ''}</div>
+      <div class="hist" style="margin-top:10px">${kinds.map((k) => { const st = kindStats(y, k); return st.n ? `<span class="dot ${pct(st.p, st.n) >= 60 ? 'p' : pct(st.p, st.n) < 40 ? 'a' : ''}">${esc(KIND_SHORT[k])} ${st.p}/${st.n}</span>` : ''; }).join('') || '<span class="tiny muted">Aucune présence enregistrée</span>'}</div>
+      <div class="small" style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:4px 10px">
+        <span class="muted">Son équipe</span><span>${team.length} jeune(s)${team.length ? ` · suivi ${fs.sent}/${fs.n}` : ''}</span>
+        <span class="muted">Rapports (4 sem.)</span><span>${team.length ? reps + '/4' : '—'}</span>
+        <span class="muted">Anniversaire</span><span>${bd ? esc(fmtD(y.birth_date, { day: 'numeric', month: 'long' })) + (bd.d <= 7 ? ` <b style="color:var(--acc)">${bd.d === 0 ? "aujourd'hui !" : 'dans ' + bd.d + ' j'}</b>` : '') : '<span style="color:var(--warn)">à compléter</span>'}</span>
+        ${y.leader_youth_id === myYouthId() ? `<span class="muted">Mon suivi (semaine)</span><span>${mine?.sent ? '<span class="b ok">contacté</span>' : '<a href="#/suivi">à contacter</a>'}</span>` : ''}
+      </div></div>`;
+  }).join('')}`;
+  return { title: 'Membres Core Team', back: true, html };
 }
 
 /* ---------- JEUNES : liste ---------- */
@@ -429,7 +521,7 @@ function viewYouthDetail(id) {
     ${digits(y.phone) ? `<div class="btns"><a class="btn ok sm" href="https://wa.me/${intlPhone(y.phone)}" target="_blank" rel="noopener">${I.wa} WhatsApp</a><a class="btn ghost sm" href="tel:+${intlPhone(y.phone)}">${I.phone} Appeler</a></div>` : ''}
   </div>
   ${miss.length ? `<div class="alert warn">Fiche incomplète : ${esc(miss.join(', '))}.</div>` : ''}
-  <div class="card"><h2>Informations ${canEditAll() ? `<a class="btn sm ghost" href="#/jeune/${y.id}/modifier">Modifier</a>` : ''}</h2>
+  <div class="card"><h2>Informations ${canEditAll() ? `<a class="btn sm ghost" href="#/jeune/${y.id}/modifier">Modifier</a>` : canEditInfo(y) ? `<a class="btn sm ghost" href="#/jeune/${y.id}/infos">Compléter</a>` : ''}</h2>
   <dl class="kv">
     <dt>Téléphone</dt><dd>${esc(fmtPhone(y.phone)) || '—'}</dd>
     <dt>Email</dt><dd>${esc(y.email) || '—'}</dd>
@@ -570,10 +662,11 @@ function viewSession(id, params) {
   const s = S.sessions.find((x) => x.id === id);
   if (!s) return { title: 'Séance', back: true, html: '<div class="empty">Séance introuvable.</div>' };
   const editable = !readOnly();
-  const scope = params.v || (canEditAll() ? 'tous' : 'equipe');
+  const scope = params.v || (s.kind === 'coreteam' ? 'core' : canEditAll() ? 'tous' : 'equipe');
   const qv = params.q || '';
   let list = S.youth.filter((y) => y.status !== 'inactif' || attOf(s.id, y.id));
   if (scope === 'equipe' && hasTeam()) list = list.filter((y) => y.leader_youth_id === myYouthId());
+  if (scope === 'core') list = list.filter((y) => y.is_core_team);
   if (scope === 'nonmarques') list = list.filter((y) => !attOf(s.id, y.id));
   if (!canEditAll()) list = list.filter((y) => y.leader_youth_id === myYouthId());
   if (qv) { const n = norm(qv); list = list.filter((y) => norm(fullName(y)).includes(n)); }
@@ -587,7 +680,7 @@ function viewSession(id, params) {
   ${readOnly() ? '<div class="small muted" style="margin-top:8px">Lecture seule.</div>' : ''}</div>
   <div class="sticky-head">
     <input type="search" class="search" id="qs" placeholder="Rechercher…" value="${esc(qv)}" style="margin-bottom:8px">
-    <div class="chips">${canEditAll() ? chip('tous', 'Tout le monde') : ''}${hasTeam() ? chip('equipe', 'Mon équipe') : ''}${chip('nonmarques', 'Non marqués')}</div>
+    <div class="chips">${canEditAll() ? chip('tous', 'Tout le monde') : ''}${hasTeam() ? chip('equipe', 'Mon équipe') : ''}${s.kind === 'coreteam' || canEditAll() ? chip('core', 'Core Team') : ''}${chip('nonmarques', 'Non marqués')}</div>
   </div>
   <div class="list" id="al">${list.length ? list.map((y) => { const a = attOf(s.id, y.id); const dis = canMark(y) ? '' : 'disabled';
     return `<div class="li" data-y="${y.id}"><span class="av ${y.is_core_team ? 'core' : ''}">${esc(initials(y))}</span><span class="grow"><div class="nm">${esc(fullName(y))}</div><div class="sub">${y.status === 'nouveau' ? 'Nouveau · ' : ''}${esc(youthById(y.leader_youth_id)?.first_name ? 'Équipe ' + youthById(y.leader_youth_id).first_name : '')}</div></span>
