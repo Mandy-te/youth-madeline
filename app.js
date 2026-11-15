@@ -14,7 +14,7 @@ const ROLES = { superadmin: 'Super Admin', pasteur: 'Pasteur', assistant: 'Assis
 const STATUS = { actif: 'Actif', nouveau: 'Nouveau', inactif: 'Inactif' };
 
 /* ---------- état ---------- */
-const S = { user: null, me: null, youth: [], profiles: [], sessions: [], attendance: [], followups: [], reports: [], loaded: false };
+const S = { user: null, me: null, youth: [], profiles: [], sessions: [], attendance: [], followups: [], reports: [], resets: [], loaded: false };
 const app = () => document.getElementById('app');
 
 /* ---------- utilitaires ---------- */
@@ -96,7 +96,8 @@ async function loadAll() {
     fetchAll('youth', ['first_name']), fetchAll('profiles', ['full_name']), fetchAll('sessions', ['date', false]),
     fetchAll('attendance'), fetchAll('followups'), fetchAll('reports', ['week_start', false]),
   ]);
-  Object.assign(S, { youth: youth.sort((a, b) => fullName(a).localeCompare(fullName(b), 'fr')), profiles, sessions, attendance, followups, reports, loaded: true });
+  const resets = isAdmin() ? (await fetchAll('password_reset_requests', ['created_at'])).filter((r) => !r.handled_at) : [];
+  Object.assign(S, { youth: youth.sort((a, b) => fullName(a).localeCompare(fullName(b), 'fr')), profiles, sessions, attendance, followups, reports, resets, loaded: true });
 }
 
 /* ---------- calculs ---------- */
@@ -267,8 +268,10 @@ function renderLogin(root) {
     <label class="f"><span>Email</span><input type="email" name="email" autocomplete="username" required></label>
     <label class="f"><span>Mot de passe</span><input type="password" name="password" autocomplete="current-password" required></label>
     <button class="btn full" type="submit">Se connecter</button>
-    <p class="small muted" style="text-align:center;margin:14px 0 0">Pas de compte ou mot de passe oublié ?<br>Demande à l'admin du Youth Ministry.</p>
+    <p class="small" style="text-align:center;margin:14px 0 0"><a href="#" id="forgot">Mot de passe oublié ?</a></p>
+    <p class="small muted" style="text-align:center;margin:6px 0 0">Pas de compte ? Demande à l'admin du Youth Ministry.</p>
   </form></div>`;
+  q('#forgot').addEventListener('click', (e) => { e.preventDefault(); renderForgot(root, q('#lf').email.value); });
   q('#lf').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target; const b = q('button', f); b.disabled = true; b.textContent = 'Connexion…';
     try {
@@ -278,6 +281,54 @@ function renderLogin(root) {
     } catch (err) { toast(errMsg(err), true); b.disabled = false; b.textContent = 'Se connecter'; }
   });
 }
+/* ---------- mot de passe oublié (demande validée par un admin, envoi par WhatsApp) ---------- */
+function renderForgot(root, email = '') {
+  root.innerHTML = `<div class="login"><form class="box" id="ff">
+    <div class="logo">YM</div><h1>Mot de passe oublié</h1>
+    <p class="c">Entre l'email de ton compte. Un admin du Youth Ministry va te renvoyer un mot de passe provisoire par WhatsApp.</p>
+    <label class="f"><span>Email du compte</span><input type="email" name="email" value="${esc(email)}" autocomplete="username" required></label>
+    <label class="f"><span>Ton numéro WhatsApp</span><input type="tel" name="phone" inputmode="numeric" placeholder="ex. 31324336" required></label>
+    <button class="btn full" type="submit">Envoyer la demande</button>
+    <button class="btn full light" type="button" id="bk" style="margin-top:8px">Retour à la connexion</button>
+  </form></div>`;
+  q('#bk').addEventListener('click', () => renderLogin(root));
+  q('#ff').addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = e.target; const b = q('button[type=submit]', f); b.disabled = true;
+    try {
+      await must(sb.rpc('request_password_reset', { p_email: f.email.value.trim().toLowerCase(), p_phone: f.phone.value, p_app: 'youth' }));
+      const msg = encodeURIComponent(`Bonjour, j'ai oublié mon mot de passe de l'app Youth Madeline. Mon email : ${f.email.value.trim()}. J'ai fait la demande dans l'app. Merci !`);
+      root.innerHTML = `<div class="login"><div class="box"><div class="logo">YM</div><h1>Demande envoyée ✅</h1>
+        <p class="c">Si un compte existe avec cet email, la demande apparaît chez les admins. Tu recevras un mot de passe provisoire sur WhatsApp, puis tu choisiras le tien à la connexion.</p>
+        <a class="btn ok full" href="https://wa.me/?text=${msg}" target="_blank" rel="noopener">${I.wa} Prévenir un admin sur WhatsApp</a>
+        <button class="btn full light" id="bk2" style="margin-top:8px">Retour à la connexion</button></div></div>`;
+      q('#bk2').addEventListener('click', () => renderLogin(root));
+    } catch (err) { toast(errMsg(err), true); b.disabled = false; }
+  });
+}
+function resetPhone(r) { const p = profileById(r.user_id); return r.phone || youthById(p?.youth_id)?.phone || ''; }
+function resetRequestsCard() {
+  if (!isAdmin() || !S.resets.length) return '';
+  return `<div class="card" style="border:2px solid var(--warn-soft)"><h2>🔑 Mot de passe oublié <span class="b warn">${S.resets.length}</span></h2>
+    ${S.resets.map((r) => { const p = profileById(r.user_id); const ph = resetPhone(r);
+      return `<div class="row" style="margin:10px 0" data-rr="${r.id}"><div class="grow" style="min-width:0"><b>${esc(p?.full_name || r.email)}</b><div class="tiny muted">${esc(r.email)} · ${esc(ph ? fmtPhone(ph) : 'pas de numéro')} · ${new Date(r.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</div></div>
+      <button class="btn sm" data-rr-go>Nouveau mot de passe</button><button class="btn light sm" data-rr-x aria-label="Ignorer">✕</button></div>`; }).join('')}
+    <div class="tiny muted">Vérifie que la demande vient bien de la personne (appel ou WhatsApp) avant d'envoyer le nouveau mot de passe.</div></div>`;
+}
+function bindResetRequests(root) {
+  on(root, '[data-rr-go]', 'click', async (e, el) => {
+    const r = S.resets.find((x) => x.id === el.closest('[data-rr]').dataset.rr);
+    if (!confirmInline(el, 'Appuie encore pour confirmer')) return;
+    el.disabled = true; const pw = genPassword();
+    try { await must(sb.rpc('admin_reset_password', { p_user_id: r.user_id, p_password: pw })); lastCred = { email: r.email, password: pw, phone: resetPhone(r) }; S.resets = S.resets.filter((x) => x.user_id !== r.user_id); toast('Mot de passe réinitialisé : envoie-le par WhatsApp'); go('#/comptes'); window.scrollTo(0, 0); }
+    catch (err) { toast(errMsg(err), true); el.disabled = false; }
+  });
+  on(root, '[data-rr-x]', 'click', async (e, el) => {
+    const id = el.closest('[data-rr]').dataset.rr;
+    if (!confirmInline(el, 'Ignorer ?')) return;
+    try { await must(sb.from('password_reset_requests').update({ handled_at: new Date().toISOString(), handled_by: S.me.id }).eq('id', id)); S.resets = S.resets.filter((x) => x.id !== id); toast('Demande ignorée'); render(); } catch (err) { toast(errMsg(err), true); }
+  });
+}
+
 function renderInactive(root) {
   root.innerHTML = `<div class="login"><div class="box"><div class="logo">YM</div><h1>Accès en attente</h1>
   <p class="c">Ton compte (${esc(S.user.email)}) n'a pas encore de rôle. Demande à l'admin du Youth Ministry de l'activer.</p>
@@ -309,6 +360,7 @@ function viewHome() {
   const first = (S.me.full_name || '').split(' ')[0];
   let html = `<div class="row" style="margin:2px 4px 12px"><div class="grow"><h1>Bonjour ${esc(first)} 👋</h1><div class="small muted">${esc(ROLES[role()])} · semaine ${esc(weekLabel(ws))}</div></div></div>`;
 
+  if (isAdmin() && S.resets.length) html += `<div class="alert warn"><a href="#/comptes" style="color:inherit">🔑 <b>${S.resets.length} demande(s) de mot de passe oublié</b> → traiter</a></div>`;
   html += homeAlerts();
   if (hasTeam()) html += homeTeamBlock(ws);
   else if (role() === 'coreteam') html += `<div class="alert warn">Ton compte n'est pas encore lié à une équipe. Demande à l'admin de lier ton compte à ta fiche et de t'assigner des jeunes.</div>`;
@@ -931,6 +983,7 @@ function viewAccounts(params) {
   const roleOpts = (cur) => Object.entries(ROLES).filter(([k]) => k !== 'superadmin' || isSuper()).map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${l}</option>`).join('');
   const ed = editId && profileById(editId);
   const html = `
+  ${lastCred ? '' : resetRequestsCard()}
   ${lastCred ? `<div class="card"><h2>Identifiants à transmettre</h2><div class="cred">${esc(credText(lastCred))}</div>
     <div class="btns" style="margin-top:10px"><a class="btn ok sm" target="_blank" rel="noopener" href="https://wa.me/${lastCred.phone ? intlPhone(lastCred.phone) : ''}?text=${encodeURIComponent(credText(lastCred))}">${I.wa} Envoyer par WhatsApp</a><button class="btn light sm" id="copy">Copier</button><button class="btn light sm" id="hide">Masquer</button></div>
     <div class="tiny muted" style="margin-top:6px">Ce mot de passe ne sera plus affiché après.</div></div>` : ''}
@@ -954,6 +1007,7 @@ function viewAccounts(params) {
   return {
     title: 'Comptes et rôles', back: true, html,
     bind(root) {
+      bindResetRequests(root);
       const cp = q('#copy', root); if (cp) cp.addEventListener('click', async () => { try { await navigator.clipboard.writeText(credText(lastCred)); toast('Copié'); } catch { toast('Copie impossible : sélectionne le texte', true); } });
       const hd = q('#hide', root); if (hd) hd.addEventListener('click', () => { lastCred = null; render(); });
       const cf = q('#cf', root);

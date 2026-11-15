@@ -132,7 +132,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--pri-2);box-shadow:0 0
 .cred{background:#111827;color:#f9fafb;border-radius:10px;padding:12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem;white-space:pre-wrap;word-break:break-all}
 
 /* login */
-.login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:linear-gradient(160deg,var(--pri) 0%,var(--pri-2) 55%,#7c3aed 100%)}
+.login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:linear-gradient(160deg,var(--pri) 0%,var(--pri-2) 60%,#2a9d8f 100%)}
 .login .box{background:#fff;border-radius:20px;padding:26px 22px;width:100%;max-width:380px;box-shadow:0 20px 50px rgba(0,0,0,.2)}
 .login .logo{margin:0 auto 12px}
 .login h1{text-align:center;font-size:1.3rem}
