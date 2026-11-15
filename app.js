@@ -591,6 +591,8 @@ function viewYouthDetail(id) {
   <div class="card"><h2>Suivi hebdomadaire</h2>
     ${fus.length ? fus.map((f) => `<div class="row small" style="margin:6px 0"><span class="grow">Semaine ${esc(weekLabel(f.week_start))}</span>${f.sent ? '<span class="b ok">contacté</span>' : '<span class="b">non</span>'}${f.replied === true ? ' <span class="b ok">a répondu</span>' : f.replied === false ? ' <span class="b bad">pas de réponse</span>' : ''}</div>${f.note ? `<div class="small muted" style="margin:-2px 0 6px">${esc(f.note)}</div>` : ''}`).join('') : '<div class="muted small">Aucun suivi enregistré.</div>'}
   </div>
+  ${(() => { const rs = S.reports.filter((r) => Array.isArray(r.details) && r.details.some((d) => d.youth_id === y.id)).sort((a, b) => b.week_start.localeCompare(a.week_start));
+    return rs.length ? `<div class="card"><h2>Dans les rapports <span class="b acc">${rs.length}</span></h2>${rs.map((r) => `<div class="tiny muted" style="margin-top:10px"><a href="#/rapport/${r.id}">Semaine ${esc(weekLabel(r.week_start))}</a> · ${esc(profileById(r.author_id)?.full_name || '—')}</div>${ficheHtml(r.details.find((d) => d.youth_id === y.id), false)}`).join('')}</div>` : ''; })()}
   <div class="card"><h2>Notes de suivi</h2><div id="notes"><div class="muted small">Chargement…</div></div>
     ${canNote ? `<form id="nf" style="margin-top:10px"><textarea name="body" placeholder="Ajouter une note (visite, besoin, prière, situation…)" required></textarea><button class="btn sm" style="margin-top:8px">Ajouter la note</button></form>` : ''}
   </div>`;
@@ -869,7 +871,7 @@ function viewReports(params) {
     <div class="small" style="margin-top:10px">${wk.length} rapport(s) reçu(s) sur ${exp.length} leader(s) attendu(s).</div>
     ${missing.length ? `<div class="alert warn" style="margin:10px 0 0"><b>Pas encore soumis :</b> ${missing.map((x) => esc(fullName(x.l)) + (x.acc ? '' : ' (sans compte)')).join(', ')}</div>` : exp.length ? '<div class="alert ok" style="margin:10px 0 0">Tous les leaders ont soumis leur rapport 🎉</div>' : ''}
     </div>
-    <div class="list">${wk.length ? wk.map((r) => { const p = profileById(r.author_id); return `<a class="li" href="#/rapport/${r.id}"><span class="av core">${esc(initials({ first_name: p?.full_name || '?' }))}</span><span class="grow"><div class="nm">${esc(p?.full_name || '—')}</div><div class="sub">${r.contacted ?? 0}/${r.team_size ?? '?'} contactés · ${(r.attention_youth || []).length} à suivre de près</div></span></a>`; }).join('') : '<div class="empty">Aucun rapport cette semaine.</div>'}</div>`;
+    <div class="list">${wk.length ? wk.map((r) => { const p = profileById(r.author_id); return `<a class="li" href="#/rapport/${r.id}"><span class="av core">${esc(initials({ first_name: p?.full_name || '?' }))}</span><span class="grow"><div class="nm">${esc(p?.full_name || '—')}</div><div class="sub">${r.contacted ?? 0}/${r.team_size ?? '?'} contactés · ${(r.attention_youth || []).length} fiche(s) jeune</div></span></a>`; }).join('') : '<div class="empty">Aucun rapport cette semaine.</div>'}</div>`;
   }
   return {
     title: 'Rapports', html,
@@ -883,44 +885,86 @@ function viewReportForm(params) {
   if (ex) return { title: 'Rapport', back: true, html: `<div class="alert ok">Ton rapport de cette semaine est déjà soumis. <a href="#/rapport/${ex.id}">Le voir</a></div>` };
   const team = myTeam().filter((y) => y.status !== 'inactif');
   const fs = teamFollowStats(team, ws);
-  const html = `<form class="card" id="rf">
-    <h2>Semaine ${esc(weekLabel(ws))}</h2>
-    <div class="alert info">Jeunes contactés : <b>${fs.sent}/${fs.n}</b> (calculé depuis ton suivi). ${fs.sent < fs.n ? `<a href="#/suivi${ws !== weekStart() ? '?w=' + ws : ''}">Compléter le suivi d'abord</a>` : ''}</div>
-    <label class="f"><span>Résumé de la semaine *</span><textarea name="summary" required placeholder="Comment vont les jeunes de ton équipe ? Qui a répondu, nouvelles importantes…"></textarea></label>
-    <div class="f" style="margin-bottom:12px"><span class="small muted" style="font-weight:600">Jeunes qui ont besoin d'une attention particulière</span>
-      ${team.map((y) => `<label class="chk"><input type="checkbox" name="att" value="${y.id}"> ${esc(fullName(y))}</label>`).join('')}</div>
-    <label class="f"><span>Besoins de prière</span><textarea name="prayer"></textarea></label>
-    <label class="f"><span>Difficultés rencontrées</span><textarea name="difficulties"></textarea></label>
-    <label class="f"><span>Suggestions</span><textarea name="suggestions"></textarea></label>
-    <div class="small muted" style="margin-bottom:10px">Une fois soumis, le rapport ne peut plus être modifié.</div>
-    <button class="btn full" type="submit">Soumettre le rapport</button>
+  const dkey = `ym_draft_${S.me.id}_${ws}`;
+  let draft = {}; try { draft = JSON.parse(localStorage.getItem(dkey) || '{}'); } catch { draft = {}; }
+  const dy = (id) => (draft.youth || {})[id];
+  const html = `<form id="rf">
+    <div class="card"><h2>Semaine ${esc(weekLabel(ws))}</h2>
+    <div class="alert info" style="margin-bottom:12px">Jeunes contactés : <b>${fs.sent}/${fs.n}</b> (calculé depuis ton suivi). ${fs.sent < fs.n ? `<a href="#/suivi${ws !== weekStart() ? '?w=' + ws : ''}">Compléter le suivi d'abord</a>` : ''}</div>
+    <label class="f" style="margin-bottom:0"><span>Résumé de la semaine *</span><textarea name="summary" required placeholder="Comment va ton équipe dans l'ensemble ? Qui a répondu, nouvelles importantes…">${esc(draft.summary)}</textarea></label></div>
+
+    <div class="sec">Jeunes qui ont besoin d'une attention particulière</div>
+    <div class="small muted" style="margin:-4px 4px 10px">Coche un jeune pour ouvrir sa fiche et remplir son rapport.</div>
+    <div class="list">${team.map((y) => { const d = dy(y.id); return `<div class="fu" data-y="${y.id}">
+      <label class="chk" style="padding:2px 0"><input type="checkbox" name="att" value="${y.id}" ${d ? 'checked' : ''}> <span class="grow"><b>${esc(fullName(y))}</b></span><span class="b acc" data-badge ${d ? '' : 'hidden'}>fiche</span></label>
+      <div class="extra" data-fiche ${d ? '' : 'hidden'} style="margin-top:6px">
+        <label class="f" style="margin:0"><span>Rapport / situation *</span><textarea data-k="situation" placeholder="Ce qui se passe pour ${esc(y.first_name)} : santé, famille, études, foi, absences…">${esc(d?.situation)}</textarea></label>
+        <label class="f" style="margin:0"><span>Demande de prière</span><textarea data-k="prayer" style="min-height:64px">${esc(d?.prayer)}</textarea></label>
+        <label class="f" style="margin:0"><span>Suggestions / action à prendre</span><textarea data-k="suggestions" style="min-height:64px" placeholder="ex. visite à la maison, appel du pasteur, aide pour…">${esc(d?.suggestions)}</textarea></label>
+      </div></div>`; }).join('')}</div>
+
+    <div class="card">
+    <label class="f"><span>Difficultés rencontrées</span><textarea name="difficulties">${esc(draft.difficulties)}</textarea></label>
+    <label class="f"><span>Suggestions générales</span><textarea name="suggestions">${esc(draft.suggestions)}</textarea></label>
+    <label class="f"><span>Prière pour l'équipe (facultatif)</span><textarea name="prayer" style="min-height:64px">${esc(draft.prayer)}</textarea></label>
+    <div class="small muted" style="margin-bottom:10px">Ton brouillon est gardé sur ce téléphone. Une fois soumis, le rapport ne peut plus être modifié.</div>
+    <button class="btn full" type="submit" id="rsub">Soumettre le rapport</button></div>
   </form>`;
   return {
     title: 'Mon rapport', back: true, html,
     bind(root) {
-      const f = q('#rf', root);
+      const f = q('#rf', root); const sub = q('#rsub', root);
+      const collect = () => {
+        const youth = {};
+        qa('[data-y]', f).forEach((row) => {
+          if (!q('input[name=att]', row).checked) return;
+          const o = {}; qa('[data-k]', row).forEach((t) => (o[t.dataset.k] = t.value));
+          youth[row.dataset.y] = o;
+        });
+        return { summary: f.summary.value, difficulties: f.difficulties.value, suggestions: f.suggestions.value, prayer: f.prayer.value, youth };
+      };
+      const label = () => { const n = qa('input[name=att]:checked', f).length; sub.textContent = 'Soumettre le rapport' + (n ? ` (${n} fiche${n > 1 ? 's' : ''})` : ''); sub.dataset.armed = ''; };
+      let t; const saveDraft = () => { clearTimeout(t); t = setTimeout(() => { try { localStorage.setItem(dkey, JSON.stringify(collect())); } catch {} }, 400); };
+      f.addEventListener('input', saveDraft);
+      qa('input[name=att]', f).forEach((cb) => cb.addEventListener('change', () => {
+        const row = cb.closest('[data-y]'); const fi = q('[data-fiche]', row);
+        fi.hidden = !cb.checked; q('[data-badge]', row).hidden = !cb.checked;
+        if (cb.checked) q('textarea', fi).focus();
+        label(); saveDraft();
+      }));
+      label();
       f.addEventListener('submit', async (e) => {
-        e.preventDefault(); const b = q('button[type=submit]', f);
-        if (!confirmInline(b, 'Appuie encore pour confirmer l’envoi')) return;
-        b.disabled = true;
-        const rec = { author_id: S.me.id, week_start: ws, contacted: fs.sent, team_size: fs.n, summary: f.summary.value.trim(), attention_youth: qa('input[name=att]:checked', f).map((x) => x.value), prayer: f.prayer.value.trim() || null, difficulties: f.difficulties.value.trim() || null, suggestions: f.suggestions.value.trim() || null };
-        try { const r = (await must(sb.from('reports').insert(rec).select()))[0]; S.reports.push(r); toast('Rapport soumis. Merci !'); go('#/rapport/' + r.id); } catch (err) { toast(errMsg(err), true); b.disabled = false; }
+        e.preventDefault();
+        const d = collect();
+        const missing = Object.entries(d.youth).find(([, o]) => !o.situation.trim());
+        if (missing) { const row = q(`[data-y="${missing[0]}"]`, f); const ta = q('[data-k=situation]', row); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); ta.focus(); toast(`Remplis le rapport de ${youthById(missing[0]).first_name}`, true); return; }
+        if (!confirmInline(sub, 'Appuie encore pour confirmer l’envoi')) return;
+        sub.disabled = true;
+        const details = Object.entries(d.youth).map(([youth_id, o]) => ({ youth_id, situation: o.situation.trim(), prayer: o.prayer.trim() || null, suggestions: o.suggestions.trim() || null }));
+        const rec = { author_id: S.me.id, week_start: ws, contacted: fs.sent, team_size: fs.n, summary: d.summary.trim(), attention_youth: details.map((x) => x.youth_id), details, prayer: d.prayer.trim() || null, difficulties: d.difficulties.trim() || null, suggestions: d.suggestions.trim() || null };
+        try { const r = (await must(sb.from('reports').insert(rec).select()))[0]; S.reports.push(r); try { localStorage.removeItem(dkey); } catch {} toast('Rapport soumis. Merci !'); go('#/rapport/' + r.id); } catch (err) { toast(errMsg(err), true); sub.disabled = false; label(); }
       });
     },
   };
 }
+const ficheHtml = (dt, withName = true) => { const y = youthById(dt.youth_id);
+  const blk = (t, v) => v ? `<div style="margin-top:8px"><div class="tiny muted" style="font-weight:700;text-transform:uppercase;letter-spacing:.04em">${t}</div><div class="small">${esc(v).replace(/\n/g, '<br>')}</div></div>` : '';
+  return `<div class="note" style="border-left-color:var(--acc);margin:12px 0">${withName ? `<a href="#/jeune/${dt.youth_id}"><b>${esc(y ? fullName(y) : 'Jeune')}</b></a>` : ''}${blk('Rapport / situation', dt.situation)}${blk('Demande de prière', dt.prayer)}${blk('Suggestions / action', dt.suggestions)}</div>`; };
 function viewReportDetail(id) {
   const r = S.reports.find((x) => x.id === id);
   if (!r) return { title: 'Rapport', back: true, html: '<div class="empty">Rapport introuvable.</div>' };
   const p = profileById(r.author_id);
   const block = (t, v) => v ? `<div style="margin-top:12px"><div class="small muted" style="font-weight:600">${t}</div><div>${esc(v).replace(/\n/g, '<br>')}</div></div>` : '';
-  const att = (r.attention_youth || []).map(youthById).filter(Boolean);
+  const details = Array.isArray(r.details) ? r.details : [];
+  const withFiche = new Set(details.map((d) => d.youth_id));
+  const attOnly = (r.attention_youth || []).filter((x) => !withFiche.has(x)).map(youthById).filter(Boolean);
   const html = `<div class="card"><h2>${esc(p?.full_name || '—')}</h2><div class="small muted">Semaine ${esc(weekLabel(r.week_start))} · soumis le ${new Date(r.submitted_at).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' })}</div>
-    <div class="alert info" style="margin-top:12px">Jeunes contactés : <b>${r.contacted ?? 0}/${r.team_size ?? '?'}</b></div>
-    ${block('Résumé', r.summary)}
-    ${att.length ? `<div style="margin-top:12px"><div class="small muted" style="font-weight:600">Attention particulière</div>${att.map(yLine).join('')}</div>` : ''}
-    ${block('Besoins de prière', r.prayer)}${block('Difficultés', r.difficulties)}${block('Suggestions', r.suggestions)}
-    ${isSuper() ? '<hr><button class="btn danger sm" id="delr">Supprimer (permet de le refaire)</button>' : ''}</div>`;
+    <div class="alert info" style="margin-top:12px">Jeunes contactés : <b>${r.contacted ?? 0}/${r.team_size ?? '?'}</b>${details.length ? ` · <b>${details.length}</b> fiche(s) jeune` : ''}</div>
+    ${block('Résumé de la semaine', r.summary)}</div>
+    ${details.length ? `<div class="sec">Attention particulière (${details.length})</div><div class="card">${details.map((d) => ficheHtml(d)).join('')}</div>` : ''}
+    ${attOnly.length ? `<div class="card"><h2>Attention particulière</h2>${attOnly.map(yLine).join('')}</div>` : ''}
+    ${r.difficulties || r.suggestions || r.prayer ? `<div class="card">${block('Difficultés', r.difficulties)}${block('Suggestions générales', r.suggestions)}${block("Prière pour l'équipe", r.prayer)}</div>` : ''}
+    ${isSuper() ? '<button class="btn danger sm" id="delr">Supprimer (permet de le refaire)</button>' : ''}`;
   return {
     title: 'Rapport', back: true, html,
     bind(root) {
